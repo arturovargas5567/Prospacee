@@ -17,7 +17,7 @@ public partial class MainWindow : Window
     private DateTime _calendarDate = new(2026, 10, 3);
     private string _calendarMode = "Mes";
     private string? _selectedSubject;
-    private string? _selectedFolder;
+    private string? _selectedFolderId;
     private string? _selectedNoteId;
     private string? _editingNoteId;
     private TextBox? _noteTitleBox;
@@ -48,7 +48,27 @@ public partial class MainWindow : Window
 
     private AppData LoadData()
     {
-        return _store.Load();
+        var data = _store.Load();
+        var changed = false;
+        foreach (var folder in data.Folders)
+        {
+            if (!string.IsNullOrWhiteSpace(folder.Id)) continue;
+            folder.Id = Guid.NewGuid().ToString("N");
+            changed = true;
+        }
+
+        // Attach files created by previous versions to their existing top-level folders.
+        foreach (var file in data.Files.Where(f => string.IsNullOrWhiteSpace(f.FolderId) && !string.IsNullOrWhiteSpace(f.FolderName)))
+        {
+            var folder = data.Folders.FirstOrDefault(f => f.Subject == file.Subject && f.ParentFolderId is null &&
+                f.Name.Equals(file.FolderName, StringComparison.OrdinalIgnoreCase));
+            if (folder is null) continue;
+            file.FolderId = folder.Id;
+            changed = true;
+        }
+
+        if (changed) _store.Save(data);
+        return data;
     }
 
     private void SaveData()
@@ -339,7 +359,7 @@ public partial class MainWindow : Window
             ApplyRounded(open, 18);
             open.Click += (_, _) =>
             {
-                _selectedSubject = subject.Name; _selectedFolder = null; ShowPage("Asignaturas");
+                _selectedSubject = subject.Name; _selectedFolderId = null; ShowPage("Asignaturas");
             };
             var menuButton = SmallButton("···", () => { });
             menuButton.FontSize = 18; menuButton.Width = 36; menuButton.Height = 32;
@@ -383,7 +403,7 @@ public partial class MainWindow : Window
         _data.Folders.RemoveAll(f => f.Subject == subject.Name);
         foreach (var task in _data.Tasks.Where(t => t.Subject == subject.Name)) task.Subject = null;
         _data.Subjects.Remove(subject);
-        _selectedSubject = null; _selectedFolder = null;
+        _selectedSubject = null; _selectedFolderId = null;
         SaveData(); ShowPage("Asignaturas");
     }
 
@@ -391,58 +411,139 @@ public partial class MainWindow : Window
     {
         var subject = _data.Subjects.FirstOrDefault(s => s.Name == _selectedSubject);
         if (subject is null) { _selectedSubject = null; ShowSubjects(); return; }
-        ContentHost.Children.Add(ActionButton("‹  Todas las asignaturas", () => { _selectedSubject = null; _selectedFolder = null; ShowPage("Asignaturas"); }));
+        var currentFolder = _selectedFolderId is null
+            ? null
+            : _data.Folders.FirstOrDefault(f => f.Id == _selectedFolderId && f.Subject == subject.Name);
+        if (_selectedFolderId is not null && currentFolder is null)
+        {
+            _selectedFolderId = null;
+            ShowSubjectContents();
+            return;
+        }
+
+        ContentHost.Children.Add(ActionButton("‹  Todas las asignaturas", () => { _selectedSubject = null; _selectedFolderId = null; ShowPage("Asignaturas"); }));
         ContentHost.Children.Add(SectionLabel("📁  " + subject.Name));
-        var folderNav = new WrapPanel();
-        folderNav.Children.Add(ActionButton("Archivos generales", () => { _selectedFolder = null; ShowPage(_page); }));
-        foreach (var folder in _data.Folders.Where(f => f.Subject == subject.Name))
+        ContentHost.Children.Add(new TextBlock
         {
-            var folderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 10, 0) };
-            folderRow.Children.Add(ActionButton("📂  " + folder.Name, () => { _selectedFolder = folder.Name; ShowPage(_page); }));
-
-            var folderOptions = SmallButton("⋯", () => { });
-            folderOptions.ToolTip = "Opciones de carpeta";
-            folderOptions.Padding = new Thickness(11, 6, 11, 6);
-            var folderMenu = new ContextMenu { Background = Brush("White"), Foreground = Brush("#343B52") };
-            var renameFolder = new MenuItem { Header = "Editar nombre", Foreground = Brush("#343B52") };
-            renameFolder.Click += (_, _) => RenameFolder(subject, folder);
-            var deleteFolder = new MenuItem { Header = "Borrar", Foreground = Brush("#343B52") };
-            deleteFolder.Click += (_, _) => DeleteFolder(subject, folder);
-            folderMenu.Items.Add(renameFolder);
-            folderMenu.Items.Add(deleteFolder);
-            folderOptions.ContextMenu = folderMenu;
-            folderOptions.Click += (_, _) => folderMenu.IsOpen = true;
-            folderRow.Children.Add(folderOptions);
-            folderNav.Children.Add(folderRow);
-        }
-        ContentHost.Children.Add(folderNav);
-
-        if (_selectedFolder is null)
+            Text = "Ubicación",
+            FontSize = 12,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = Brush("#788198"),
+            Margin = new Thickness(0, 0, 0, 5)
+        });
+        var breadcrumbs = new WrapPanel { Margin = new Thickness(0, 0, 0, 12) };
+        breadcrumbs.Children.Add(SmallButton("📚  " + subject.Name, () => { _selectedFolderId = null; ShowPage(_page); }));
+        var ancestors = GetFolderAncestors(currentFolder);
+        foreach (var ancestor in ancestors)
         {
-            ContentHost.Children.Add(ActionButton("＋  Crear carpeta", () =>
-            {
-                var name = Ask("Nueva carpeta", "Nombre de la carpeta:");
-                if (string.IsNullOrWhiteSpace(name)) return;
-                if (_data.Folders.Any(f => f.Subject == subject.Name && f.Name.Equals(name.Trim(), StringComparison.OrdinalIgnoreCase)))
-                { MessageBox.Show("Ya existe una carpeta con ese nombre en esta asignatura."); return; }
-                _data.Folders.Add(new SubjectFolder { Subject = subject.Name, Name = name.Trim() }); SaveData(); ShowPage(_page);
-            }));
+            breadcrumbs.Children.Add(new TextBlock { Text = "›", VerticalAlignment = VerticalAlignment.Center, Foreground = Brush("#788198"), Margin = new Thickness(7, 0, 3, 4) });
+            breadcrumbs.Children.Add(SmallButton(ancestor.Name, () => { _selectedFolderId = ancestor.Id; ShowPage(_page); }));
         }
+        if (currentFolder is not null)
+        {
+            breadcrumbs.Children.Add(new TextBlock { Text = "›", VerticalAlignment = VerticalAlignment.Center, Foreground = Brush("#788198"), Margin = new Thickness(7, 0, 3, 4) });
+            breadcrumbs.Children.Add(new TextBlock { Text = currentFolder.Name, FontWeight = FontWeights.SemiBold, Foreground = Brush("#343B52"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, 4) });
+        }
+        ContentHost.Children.Add(breadcrumbs);
+
+        var addFolderLabel = currentFolder is null ? "＋  Nueva carpeta" : "＋  Nueva subcarpeta";
+        ContentHost.Children.Add(ActionButton(addFolderLabel, () => CreateFolder(subject, currentFolder)));
+        ContentHost.Children.Add(SectionLabel(currentFolder is null ? "Carpetas de la asignatura" : "Subcarpetas"));
+
+        var childFolders = _data.Folders
+            .Where(f => f.Subject == subject.Name && f.ParentFolderId == currentFolder?.Id)
+            .OrderBy(f => f.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+        if (childFolders.Count == 0)
+            ContentHost.Children.Add(Card(currentFolder is null
+                ? "Aún no hay carpetas. Crea una para empezar a organizar esta asignatura."
+                : "Esta carpeta todavía no tiene subcarpetas. Puedes crear una desde el botón de arriba."));
         else
         {
-            ContentHost.Children.Add(SectionLabel("Carpeta · " + _selectedFolder));
+            var folderTiles = new WrapPanel { Margin = new Thickness(0, 0, 0, 8) };
+            foreach (var folder in childFolders)
+                folderTiles.Children.Add(FolderCard(subject, folder));
+            ContentHost.Children.Add(folderTiles);
         }
 
-        var folderName = _selectedFolder;
-        ContentHost.Children.Add(ActionButton("＋  Añadir archivos de mi equipo", () => ImportFiles(subject.Name, folderName)));
+        ContentHost.Children.Add(SectionLabel("Archivos en esta ubicación"));
+        ContentHost.Children.Add(ActionButton("＋  Añadir archivos de mi equipo", () => ImportFiles(subject.Name, currentFolder)));
 
-        var files = _data.Files.Where(f => f.Subject == subject.Name && f.FolderName == folderName).ToList();
-        ContentHost.Children.Add(SectionLabel("Archivos"));
-        if (files.Count == 0) ContentHost.Children.Add(Card("Aún no has añadido archivos aquí."));
+        var files = _data.Files.Where(f => f.Subject == subject.Name && f.FolderId == currentFolder?.Id).ToList();
+        if (files.Count == 0) ContentHost.Children.Add(Card("No hay archivos en esta ubicación. Los archivos que añadas aquí aparecerán en esta lista."));
         foreach (var file in files) ContentHost.Children.Add(FileCard(file));
     }
 
-    private void ImportFiles(string subject, string? folder)
+    private List<SubjectFolder> GetFolderAncestors(SubjectFolder? folder)
+    {
+        var result = new List<SubjectFolder>();
+        var current = folder;
+        var visited = new HashSet<string>();
+        while (current?.ParentFolderId is not null && visited.Add(current.Id))
+        {
+            current = _data.Folders.FirstOrDefault(f => f.Id == current.ParentFolderId && f.Subject == folder?.Subject);
+            if (current is not null) result.Add(current);
+        }
+        result.Reverse();
+        return result;
+    }
+
+    private Border FolderCard(Subject subject, SubjectFolder folder)
+    {
+        var filesCount = _data.Files.Count(f => f.Subject == subject.Name && f.FolderId == folder.Id);
+        var foldersCount = _data.Folders.Count(f => f.Subject == subject.Name && f.ParentFolderId == folder.Id);
+        var content = new StackPanel();
+        content.Children.Add(new TextBlock { Text = "📁", FontSize = 25, Margin = new Thickness(0, 0, 0, 9) });
+        content.Children.Add(new TextBlock { Text = folder.Name, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = Brush("#20263B"), TextTrimming = TextTrimming.CharacterEllipsis });
+        content.Children.Add(new TextBlock { Text = $"{foldersCount} subcarpetas · {filesCount} archivos", FontSize = 12, Foreground = Brush("#788198"), Margin = new Thickness(0, 5, 0, 0) });
+        var open = new Button { Content = content, Width = 218, Height = 114, Padding = new Thickness(15), HorizontalContentAlignment = HorizontalAlignment.Left, VerticalContentAlignment = VerticalAlignment.Center, Background = Brush("#EEF1FF"), BorderBrush = Brush("#DCE2FF"), BorderThickness = new Thickness(1), Cursor = System.Windows.Input.Cursors.Hand };
+        ApplyRounded(open, 16);
+        open.Click += (_, _) => { _selectedFolderId = folder.Id; ShowPage(_page); };
+
+        var menuButton = SmallButton("⋯", () => { });
+        menuButton.ToolTip = "Opciones de carpeta";
+        menuButton.Padding = new Thickness(9, 5, 9, 5);
+        var menu = new ContextMenu { Background = Brush("White"), Foreground = Brush("#343B52") };
+        var rename = new MenuItem { Header = "Editar nombre", Foreground = Brush("#343B52") };
+        rename.Click += (_, _) => RenameFolder(subject, folder);
+        var delete = new MenuItem { Header = "Borrar", Foreground = Brush("#343B52") };
+        delete.Click += (_, _) => DeleteFolder(subject, folder);
+        menu.Items.Add(rename);
+        menu.Items.Add(delete);
+        menuButton.ContextMenu = menu;
+        menuButton.Click += (_, _) => menu.IsOpen = true;
+
+        var row = new DockPanel { Width = 263, Margin = new Thickness(0, 0, 12, 12) };
+        DockPanel.SetDock(menuButton, Dock.Right);
+        row.Children.Add(menuButton);
+        row.Children.Add(open);
+        return new Border { Child = row, Background = Brushes.Transparent };
+    }
+
+    private void CreateFolder(Subject subject, SubjectFolder? parent)
+    {
+        var name = Ask(parent is null ? "Nueva carpeta" : "Nueva subcarpeta", "Nombre de la carpeta:");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        name = name.Trim();
+        if (_data.Folders.Any(f => f.Subject == subject.Name && f.ParentFolderId == parent?.Id && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show("Ya existe una carpeta con ese nombre en esta ubicación.", "Nombre duplicado", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var folder = new SubjectFolder { Subject = subject.Name, Name = name, ParentFolderId = parent?.Id };
+        _data.Folders.Add(folder);
+        SaveData();
+        ShowPage(_page);
+    }
+
+    private string GetFolderPath(SubjectFolder folder)
+    {
+        var names = GetFolderAncestors(folder).Select(f => f.Name).Append(folder.Name);
+        return string.Join("/", names);
+    }
+
+    private void ImportFiles(string subject, SubjectFolder? folder)
     {
         var picker = new OpenFileDialog { Title = "Añadir archivos a Prospace", Multiselect = true, CheckFileExists = true };
         if (picker.ShowDialog(this) != true) return;
@@ -453,7 +554,7 @@ public partial class MainWindow : Window
             var storedName = Guid.NewGuid().ToString("N") + Path.GetExtension(source);
             var destination = Path.Combine(storage, storedName);
             File.Copy(source, destination);
-            _data.Files.Add(new StudyFile { Subject = subject, FolderName = folder, DisplayName = Path.GetFileName(source), StoredPath = destination });
+            _data.Files.Add(new StudyFile { Subject = subject, FolderId = folder?.Id, FolderName = folder is null ? null : GetFolderPath(folder), DisplayName = Path.GetFileName(source), StoredPath = destination });
         }
         SaveData(); ShowPage(_page);
     }
@@ -464,33 +565,49 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(name)) return;
         name = name.Trim();
         if (!name.Equals(folder.Name, StringComparison.OrdinalIgnoreCase) &&
-            _data.Folders.Any(f => f.Subject == subject.Name && !ReferenceEquals(f, folder) && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+            _data.Folders.Any(f => f.Subject == subject.Name && f.ParentFolderId == folder.ParentFolderId && !ReferenceEquals(f, folder) && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
-            MessageBox.Show("Ya existe una carpeta con ese nombre en esta asignatura.", "Nombre duplicado", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("Ya existe una carpeta con ese nombre en esta ubicación.", "Nombre duplicado", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var oldName = folder.Name;
         folder.Name = name;
-        foreach (var file in _data.Files.Where(f => f.Subject == subject.Name && f.FolderName == oldName))
-            file.FolderName = name;
-        if (_selectedSubject == subject.Name && _selectedFolder == oldName)
-            _selectedFolder = name;
+        foreach (var descendant in GetFolderAndDescendants(folder))
+        {
+            var path = GetFolderPath(descendant);
+            foreach (var file in _data.Files.Where(f => f.Subject == subject.Name && f.FolderId == descendant.Id))
+                file.FolderName = path;
+        }
         SaveData();
         ShowPage(_page);
     }
 
+    private List<SubjectFolder> GetFolderAndDescendants(SubjectFolder folder)
+    {
+        var result = new List<SubjectFolder> { folder };
+        for (var i = 0; i < result.Count; i++)
+            result.AddRange(_data.Folders.Where(f => f.Subject == folder.Subject && f.ParentFolderId == result[i].Id && !result.Any(existing => existing.Id == f.Id)));
+        return result;
+    }
+
     private void DeleteFolder(Subject subject, SubjectFolder folder)
     {
-        var files = _data.Files.Where(f => f.Subject == subject.Name && f.FolderName == folder.Name).ToList();
-        var contents = files.Count == 0 ? "" : $" También se eliminarán {files.Count} archivo(s) guardado(s) dentro de Prospace.";
-        if (MessageBox.Show($"¿Borrar la carpeta «{folder.Name}»?{contents}", "Borrar carpeta", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        var folders = GetFolderAndDescendants(folder);
+        var folderIds = folders.Select(f => f.Id).ToHashSet(StringComparer.Ordinal);
+        var files = _data.Files.Where(f => f.Subject == subject.Name && f.FolderId is not null && folderIds.Contains(f.FolderId)).ToList();
+        var details = $" También se borrarán sus {folders.Count - 1} subcarpeta(s) y {files.Count} archivo(s) guardado(s) dentro de Prospace.";
+        if (MessageBox.Show($"¿Borrar la carpeta «{folder.Name}» y todo lo que contiene?{details}", "Borrar carpeta", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
 
         foreach (var file in files)
-            RemoveStudyFile(file);
-        _data.Folders.Remove(folder);
-        if (_selectedSubject == subject.Name && _selectedFolder == folder.Name)
-            _selectedFolder = null;
+        {
+            if (RemoveStudyFile(file)) continue;
+            SaveData();
+            ShowPage(_page);
+            return;
+        }
+        _data.Folders.RemoveAll(f => folderIds.Contains(f.Id));
+        if (_selectedFolderId is not null && folderIds.Contains(_selectedFolderId))
+            _selectedFolderId = folder.ParentFolderId;
         SaveData();
         ShowPage(_page);
     }
@@ -498,12 +615,12 @@ public partial class MainWindow : Window
     private void DeleteStudyFile(StudyFile file)
     {
         if (MessageBox.Show($"¿Quitar «{file.DisplayName}» de Prospace y borrar la copia guardada?", "Borrar archivo", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        RemoveStudyFile(file);
+        if (!RemoveStudyFile(file)) return;
         SaveData();
         ShowPage(_page);
     }
 
-    private void RemoveStudyFile(StudyFile file)
+    private bool RemoveStudyFile(StudyFile file)
     {
         try
         {
@@ -512,8 +629,10 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             MessageBox.Show($"No se pudo borrar la copia de «{file.DisplayName}»: {ex.Message}", "Error al borrar", MessageBoxButton.OK, MessageBoxImage.Error);
+            return false;
         }
         _data.Files.Remove(file);
+        return true;
     }
 
     private Border FileCard(StudyFile file)
