@@ -19,13 +19,17 @@ public class Subject
 
 public class SubjectFolder
 {
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Subject { get; set; } = "";
     public string Name { get; set; } = "";
+    public string? ParentFolderId { get; set; }
 }
 
 public class StudyFile
 {
     public string Subject { get; set; } = "";
+    public string? FolderId { get; set; }
+    // Kept for compatibility with data saved by older Prospace versions.
     public string? FolderName { get; set; }
     public string DisplayName { get; set; } = "";
     public string StoredPath { get; set; } = "";
