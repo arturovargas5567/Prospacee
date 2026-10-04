@@ -1,0 +1,11 @@
+<Application x:Class="Prospace.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             StartupUri="MainWindow.xaml">
+    <Application.Resources>
+        <SolidColorBrush x:Key="Ink" Color="#20263B" />
+        <SolidColorBrush x:Key="Muted" Color="#788198" />
+        <SolidColorBrush x:Key="Accent" Color="#5967D8" />
+    </Application.Resources>
+</Application>
+
