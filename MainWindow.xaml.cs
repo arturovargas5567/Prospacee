@@ -396,7 +396,25 @@ public partial class MainWindow : Window
         var folderNav = new WrapPanel();
         folderNav.Children.Add(ActionButton("Archivos generales", () => { _selectedFolder = null; ShowPage(_page); }));
         foreach (var folder in _data.Folders.Where(f => f.Subject == subject.Name))
-            folderNav.Children.Add(ActionButton("📂  " + folder.Name, () => { _selectedFolder = folder.Name; ShowPage(_page); }));
+        {
+            var folderRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 10, 0) };
+            folderRow.Children.Add(ActionButton("📂  " + folder.Name, () => { _selectedFolder = folder.Name; ShowPage(_page); }));
+
+            var folderOptions = SmallButton("⋯", () => { });
+            folderOptions.ToolTip = "Opciones de carpeta";
+            folderOptions.Padding = new Thickness(11, 6, 11, 6);
+            var folderMenu = new ContextMenu { Background = Brush("White"), Foreground = Brush("#343B52") };
+            var renameFolder = new MenuItem { Header = "Editar nombre", Foreground = Brush("#343B52") };
+            renameFolder.Click += (_, _) => RenameFolder(subject, folder);
+            var deleteFolder = new MenuItem { Header = "Borrar", Foreground = Brush("#343B52") };
+            deleteFolder.Click += (_, _) => DeleteFolder(subject, folder);
+            folderMenu.Items.Add(renameFolder);
+            folderMenu.Items.Add(deleteFolder);
+            folderOptions.ContextMenu = folderMenu;
+            folderOptions.Click += (_, _) => folderMenu.IsOpen = true;
+            folderRow.Children.Add(folderOptions);
+            folderNav.Children.Add(folderRow);
+        }
         ContentHost.Children.Add(folderNav);
 
         if (_selectedFolder is null)
@@ -440,9 +458,69 @@ public partial class MainWindow : Window
         SaveData(); ShowPage(_page);
     }
 
+    private void RenameFolder(Subject subject, SubjectFolder folder)
+    {
+        var name = Ask("Editar carpeta", $"Nuevo nombre para «{folder.Name}»:");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        name = name.Trim();
+        if (!name.Equals(folder.Name, StringComparison.OrdinalIgnoreCase) &&
+            _data.Folders.Any(f => f.Subject == subject.Name && !ReferenceEquals(f, folder) && f.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            MessageBox.Show("Ya existe una carpeta con ese nombre en esta asignatura.", "Nombre duplicado", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var oldName = folder.Name;
+        folder.Name = name;
+        foreach (var file in _data.Files.Where(f => f.Subject == subject.Name && f.FolderName == oldName))
+            file.FolderName = name;
+        if (_selectedSubject == subject.Name && _selectedFolder == oldName)
+            _selectedFolder = name;
+        SaveData();
+        ShowPage(_page);
+    }
+
+    private void DeleteFolder(Subject subject, SubjectFolder folder)
+    {
+        var files = _data.Files.Where(f => f.Subject == subject.Name && f.FolderName == folder.Name).ToList();
+        var contents = files.Count == 0 ? "" : $" También se eliminarán {files.Count} archivo(s) guardado(s) dentro de Prospace.";
+        if (MessageBox.Show($"¿Borrar la carpeta «{folder.Name}»?{contents}", "Borrar carpeta", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+
+        foreach (var file in files)
+            RemoveStudyFile(file);
+        _data.Folders.Remove(folder);
+        if (_selectedSubject == subject.Name && _selectedFolder == folder.Name)
+            _selectedFolder = null;
+        SaveData();
+        ShowPage(_page);
+    }
+
+    private void DeleteStudyFile(StudyFile file)
+    {
+        if (MessageBox.Show($"¿Quitar «{file.DisplayName}» de Prospace y borrar la copia guardada?", "Borrar archivo", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        RemoveStudyFile(file);
+        SaveData();
+        ShowPage(_page);
+    }
+
+    private void RemoveStudyFile(StudyFile file)
+    {
+        try
+        {
+            if (File.Exists(file.StoredPath)) File.Delete(file.StoredPath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"No se pudo borrar la copia de «{file.DisplayName}»: {ex.Message}", "Error al borrar", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        _data.Files.Remove(file);
+    }
+
     private Border FileCard(StudyFile file)
     {
         var row = new DockPanel();
+        var delete = SmallButton("Borrar", () => DeleteStudyFile(file));
+        DockPanel.SetDock(delete, Dock.Right); row.Children.Add(delete);
         var open = SmallButton("Abrir", () =>
         {
             if (File.Exists(file.StoredPath)) Process.Start(new ProcessStartInfo(file.StoredPath) { UseShellExecute = true });
